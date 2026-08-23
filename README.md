@@ -44,7 +44,7 @@ Set the Android and iOS base URL to the public HTTPS URL, for example `https://g
 
 ## Screenshot history
 
-Images are stored in `screenshots/`; metadata is stored in `data/gamewatchdog.sqlite`. The defaults retain 3 days and at most 5 GB. Both are configurable in `.env`. The control page starts at the latest screenshot and provides previous/next navigation.
+Images are stored in `screenshots/`; metadata is stored in `data/gamewatchdog.sqlite`. The defaults retain 3 days and at most 5 GB. Both are configurable in `.env`. Screenshots load only after the viewer clicks the button; the page then starts at the latest image and provides previous/next navigation.
 
 - `GET /api/control/screenshots?device=home-zflip3&limit=50`
 - `GET /api/control/screenshots/:id`
