@@ -17,7 +17,7 @@ const RETENTION_DAYS = numberEnv("SCREENSHOT_RETENTION_DAYS", 3);
 const MAX_BYTES = numberEnv("SCREENSHOT_MAX_GB", 5) * 1024 ** 3;
 const COMMAND_TTL_MS = numberEnv("COMMAND_TTL_SECONDS", 3600) * 1000;
 const DEVICE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const COMMANDS = new Set(["RELOGIN_HOME", "EXTEND_30", "CANCEL_AUTO_RELOGIN", "START_FARM", "STOP_FARM", "ENABLE_WATCHDOG", "DISABLE_WATCHDOG", "START_TICKET", "STOP_TICKET", "CAPTURE_SCREEN", "RESTART_GAME"]);
+const COMMANDS = new Set(["RELOGIN_HOME", "EXTEND_30", "CANCEL_AUTO_RELOGIN", "START_FARM", "STOP_FARM", "ENABLE_WATCHDOG", "DISABLE_WATCHDOG", "START_TICKET", "STOP_TICKET", "CAPTURE_SCREEN", "RESTART_GAME", "TAP_SCREEN"]);
 
 mkdirSync(DATA_DIR, { recursive: true });
 mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -29,7 +29,7 @@ db.exec(`
     device TEXT PRIMARY KEY, payload TEXT NOT NULL, last_seen INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS commands (
-    id TEXT PRIMARY KEY, device TEXT NOT NULL, command TEXT NOT NULL,
+    id TEXT PRIMARY KEY, device TEXT NOT NULL, command TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL, started_at INTEGER, acknowledged_at INTEGER, result TEXT
   );
   CREATE INDEX IF NOT EXISTS commands_pending ON commands(device, acknowledged_at, created_at);
@@ -45,6 +45,7 @@ db.exec(`
   );
 `);
 ensureColumn("commands", "started_at", "INTEGER");
+ensureColumn("commands", "payload", "TEXT NOT NULL DEFAULT '{}'");
 
 const clients = new Set();
 const authFailures = new Map();
@@ -119,10 +120,10 @@ async function devicePoll(req, res, url) {
     .run(now, device, now - 180_000);
   db.prepare(`INSERT INTO device_status(device,payload,last_seen) VALUES(?,?,?)
     ON CONFLICT(device) DO UPDATE SET payload=excluded.payload,last_seen=excluded.last_seen`).run(device, JSON.stringify(body), now);
-  const command = db.prepare(`SELECT id,command,created_at,started_at FROM commands
+  const command = db.prepare(`SELECT id,command,payload,created_at,started_at FROM commands
     WHERE device=? AND acknowledged_at IS NULL AND created_at>=? ORDER BY created_at LIMIT 1`).get(device, now - COMMAND_TTL_MS);
   broadcast({ type: "status", device, status: { ...body, lastSeen: now } });
-  sendJson(res, 200, command && !command.started_at ? { id: command.id, command: command.command, createdAt: command.created_at } : { command: null });
+  sendJson(res, 200, command && !command.started_at ? { id: command.id, command: command.command, payload: JSON.parse(command.payload || "{}"), createdAt: command.created_at } : { command: null });
 }
 
 async function deviceAck(req, res) {
@@ -139,8 +140,10 @@ async function deviceAck(req, res) {
 async function controlCommand(req, res) {
   const body = await readJson(req, 32_000); const device = validDevice(body.device);
   if (!device || !COMMANDS.has(body.command)) return sendJson(res, 400, { error: "invalid_command" });
-  const command = { id: randomUUID(), device, command: body.command, createdAt: Date.now() };
-  db.prepare("INSERT INTO commands(id,device,command,created_at) VALUES(?,?,?,?)").run(command.id, device, command.command, command.createdAt);
+  const payload = body.command === "TAP_SCREEN" ? validTapPayload(body.payload) : {};
+  if (body.command === "TAP_SCREEN" && !payload) return sendJson(res, 400, { error: "invalid_tap_coordinates" });
+  const command = { id: randomUUID(), device, command: body.command, payload, createdAt: Date.now() };
+  db.prepare("INSERT INTO commands(id,device,command,payload,created_at) VALUES(?,?,?,?,?)").run(command.id, device, command.command, JSON.stringify(payload), command.createdAt);
   logEvent(device, "COMMAND_QUEUED", command); broadcast({ type: "command", ...command });
   sendJson(res, 202, command);
 }
@@ -223,6 +226,7 @@ function clientIp(req) {
 function secureEqual(a, b) { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); }
 function validDevice(value) { return typeof value === "string" && DEVICE_RE.test(value) ? value : null; }
 function cleanEvent(value) { const text = String(value).toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 40); return text || "MANUAL"; }
+function validTapPayload(value) { const x = Number(value?.xRatio), y = Number(value?.yRatio), capturedAt = Number(value?.capturedAt); return Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1 && Number.isFinite(capturedAt) && Date.now() - capturedAt >= 0 && Date.now() - capturedAt <= 60_000 ? { xRatio: x, yRatio: y, capturedAt } : null; }
 function logEvent(device, kind, detail) { db.prepare("INSERT INTO events(device,kind,detail,created_at) VALUES(?,?,?,?)").run(device, kind, JSON.stringify(detail), Date.now()); }
 function broadcast(message) { const data = JSON.stringify(message); for (const ws of clients) if (ws.authenticated && ws.readyState === 1) ws.send(data); }
 function securityHeaders(res) { res.setHeader("x-content-type-options", "nosniff"); res.setHeader("referrer-policy", "no-referrer"); res.setHeader("x-frame-options", "DENY"); res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()"); }
