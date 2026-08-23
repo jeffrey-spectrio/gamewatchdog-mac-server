@@ -30,7 +30,7 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS commands (
     id TEXT PRIMARY KEY, device TEXT NOT NULL, command TEXT NOT NULL,
-    created_at INTEGER NOT NULL, acknowledged_at INTEGER, result TEXT
+    created_at INTEGER NOT NULL, started_at INTEGER, acknowledged_at INTEGER, result TEXT
   );
   CREATE INDEX IF NOT EXISTS commands_pending ON commands(device, acknowledged_at, created_at);
   CREATE TABLE IF NOT EXISTS screenshots (
@@ -44,6 +44,7 @@ db.exec(`
     kind TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL
   );
 `);
+ensureColumn("commands", "started_at", "INTEGER");
 
 const clients = new Set();
 const authFailures = new Map();
@@ -114,19 +115,22 @@ async function route(req, res) {
 async function devicePoll(req, res, url) {
   const device = validDevice(url.searchParams.get("device")); if (!device) return sendJson(res, 400, { error: "invalid_device" });
   const body = await readJson(req, 64_000); const now = Date.now();
+  db.prepare("UPDATE commands SET acknowledged_at=?,result='FAIL_EXECUTION_TIMEOUT' WHERE device=? AND acknowledged_at IS NULL AND started_at IS NOT NULL AND started_at<?")
+    .run(now, device, now - 180_000);
   db.prepare(`INSERT INTO device_status(device,payload,last_seen) VALUES(?,?,?)
     ON CONFLICT(device) DO UPDATE SET payload=excluded.payload,last_seen=excluded.last_seen`).run(device, JSON.stringify(body), now);
-  const command = db.prepare(`SELECT id,command,created_at FROM commands
+  const command = db.prepare(`SELECT id,command,created_at,started_at FROM commands
     WHERE device=? AND acknowledged_at IS NULL AND created_at>=? ORDER BY created_at LIMIT 1`).get(device, now - COMMAND_TTL_MS);
   broadcast({ type: "status", device, status: { ...body, lastSeen: now } });
-  sendJson(res, 200, command ? { id: command.id, command: command.command, createdAt: command.created_at } : { command: null });
+  sendJson(res, 200, command && !command.started_at ? { id: command.id, command: command.command, createdAt: command.created_at } : { command: null });
 }
 
 async function deviceAck(req, res) {
   const body = await readJson(req, 32_000); const device = validDevice(body.device);
   if (!device || typeof body.id !== "string") return sendJson(res, 400, { error: "invalid_request" });
-  const now = Date.now();
-  db.prepare("UPDATE commands SET acknowledged_at=?,result=? WHERE id=? AND device=?").run(now, String(body.result || ""), body.id, device);
+  const now = Date.now(); const result = String(body.result || "");
+  if (result === "EXECUTING") db.prepare("UPDATE commands SET started_at=COALESCE(started_at,?),result=? WHERE id=? AND device=? AND acknowledged_at IS NULL").run(now, result, body.id, device);
+  else db.prepare("UPDATE commands SET started_at=COALESCE(started_at,?),acknowledged_at=?,result=? WHERE id=? AND device=?").run(now, now, result, body.id, device);
   logEvent(device, "COMMAND_ACK", { id: body.id, result: body.result });
   broadcast({ type: "ack", device, id: body.id, result: body.result, at: now });
   sendJson(res, 200, { ok: true });
@@ -142,12 +146,12 @@ async function controlCommand(req, res) {
 }
 
 function commandStatus(res, id) {
-  const row = db.prepare("SELECT id,device,command,created_at,acknowledged_at,result FROM commands WHERE id=?").get(id);
+  const row = db.prepare("SELECT id,device,command,created_at,started_at,acknowledged_at,result FROM commands WHERE id=?").get(id);
   if (!row) return sendJson(res, 404, { error: "not_found" });
   sendJson(res, 200, {
     id: row.id, device: row.device, command: row.command, createdAt: row.created_at,
-    acknowledgedAt: row.acknowledged_at || null, result: row.result || null,
-    state: row.acknowledged_at ? "ACKNOWLEDGED" : "QUEUED"
+    startedAt: row.started_at || null, acknowledgedAt: row.acknowledged_at || null, result: row.result || null,
+    state: row.acknowledged_at ? "COMPLETED" : row.started_at ? "EXECUTING" : "QUEUED"
   });
 }
 
@@ -228,6 +232,7 @@ async function readJson(req, max) { return JSON.parse((await readBody(req, max))
 async function readBody(req, max) { const chunks = []; let size = 0; for await (const chunk of req) { size += chunk.length; if (size > max) throw new Error("request_too_large"); chunks.push(chunk); } return Buffer.concat(chunks); }
 function required(name) { const value = process.env[name]; if (!value || value.startsWith("replace-")) throw new Error(`${name} is required`); return value; }
 function numberEnv(name, fallback) { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? value : fallback; }
+function ensureColumn(table, column, type) { if (!db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`); }
 function loadEnv() { const path = resolve(".env"); if (!existsSync(path)) return; for (const line of readFileSync(path, "utf8").split(/\r?\n/)) { const match = line.match(/^([A-Z0-9_]+)=(.*)$/); if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2]; } }
 
 cleanupScreenshots(); setInterval(cleanupScreenshots, 60 * 60_000).unref();
