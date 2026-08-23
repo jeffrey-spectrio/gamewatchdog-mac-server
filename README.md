@@ -44,12 +44,12 @@ Set the Android and iOS base URL to the public HTTPS URL, for example `https://g
 
 ## Screenshot history
 
-Images are stored in `screenshots/`; metadata is stored in `data/gamewatchdog.sqlite`. The defaults retain 30 days and at most 5 GB. Both are configurable in `.env`.
+Images are stored in `screenshots/`; metadata is stored in `data/gamewatchdog.sqlite`. The defaults retain 3 days and at most 5 GB. Both are configurable in `.env`. The control page starts at the latest screenshot and provides previous/next navigation.
 
 - `GET /api/control/screenshots?device=home-zflip3&limit=50`
 - `GET /api/control/screenshots/:id`
 
-Both endpoints require `Authorization: Bearer <CONTROL_TOKEN>`.
+These two viewing endpoints are public. Capturing screenshots and all control commands still require `Authorization: Bearer <CONTROL_TOKEN>`.
 
 ## WebSocket
 
@@ -80,4 +80,3 @@ The following Worker-compatible endpoints are retained:
 - `POST /api/device/poll`
 - `POST /api/device/ack`
 - `POST /api/device/screenshot`
-

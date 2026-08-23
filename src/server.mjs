@@ -13,7 +13,7 @@ const CONTROL_TOKEN = required("CONTROL_TOKEN");
 const DEVICE_TOKEN = process.env.DEVICE_TOKEN || CONTROL_TOKEN;
 const DATA_DIR = resolve(process.env.DATA_DIR || "./data");
 const SCREENSHOT_DIR = resolve(process.env.SCREENSHOT_DIR || "./screenshots");
-const RETENTION_DAYS = numberEnv("SCREENSHOT_RETENTION_DAYS", 30);
+const RETENTION_DAYS = numberEnv("SCREENSHOT_RETENTION_DAYS", 3);
 const MAX_BYTES = numberEnv("SCREENSHOT_MAX_GB", 5) * 1024 ** 3;
 const COMMAND_TTL_MS = numberEnv("COMMAND_TTL_SECONDS", 3600) * 1000;
 const DEVICE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -89,6 +89,11 @@ async function route(req, res) {
     return sendJson(res, 200, { status: row ? { ...JSON.parse(row.payload), device, lastSeen: row.last_seen } : null, serverTime: Date.now() });
   }
 
+  // Screenshot viewing is intentionally public; capturing and all controls remain authenticated.
+  if (req.method === "GET" && url.pathname === "/api/control/screenshots") return screenshotHistory(res, url);
+  const publicScreenshotMatch = url.pathname.match(/^\/api\/control\/screenshots\/([a-f0-9-]+)$/);
+  if (req.method === "GET" && publicScreenshotMatch) return historyImage(res, publicScreenshotMatch[1]);
+
   if (url.pathname.startsWith("/api/device/")) {
     if (!authorize(req, DEVICE_TOKEN, res)) return;
     if (req.method === "POST" && url.pathname === "/api/device/poll") return devicePoll(req, res, url);
@@ -102,9 +107,6 @@ async function route(req, res) {
     const commandMatch = url.pathname.match(/^\/api\/control\/commands\/([a-f0-9-]+)$/);
     if (req.method === "GET" && commandMatch) return commandStatus(res, commandMatch[1]);
     if (req.method === "GET" && url.pathname === "/api/control/screenshot") return consumeScreenshot(res, url);
-    if (req.method === "GET" && url.pathname === "/api/control/screenshots") return screenshotHistory(res, url);
-    const match = url.pathname.match(/^\/api\/control\/screenshots\/([a-f0-9-]+)$/);
-    if (req.method === "GET" && match) return historyImage(res, match[1]);
   }
   sendJson(res, 404, { error: "not_found" });
 }
