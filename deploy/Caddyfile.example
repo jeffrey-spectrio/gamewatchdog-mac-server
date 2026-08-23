@@ -1,0 +1,7 @@
+gamewatchdog.example.com:8443 {
+    reverse_proxy 127.0.0.1:8787
+    encode zstd gzip
+    log {
+        output file /usr/local/var/log/gamewatchdog-access.log
+    }
+}
