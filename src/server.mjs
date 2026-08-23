@@ -99,6 +99,8 @@ async function route(req, res) {
   if (url.pathname.startsWith("/api/control/")) {
     if (!authorize(req, CONTROL_TOKEN, res)) return;
     if (req.method === "POST" && url.pathname === "/api/control/command") return controlCommand(req, res);
+    const commandMatch = url.pathname.match(/^\/api\/control\/commands\/([a-f0-9-]+)$/);
+    if (req.method === "GET" && commandMatch) return commandStatus(res, commandMatch[1]);
     if (req.method === "GET" && url.pathname === "/api/control/screenshot") return consumeScreenshot(res, url);
     if (req.method === "GET" && url.pathname === "/api/control/screenshots") return screenshotHistory(res, url);
     const match = url.pathname.match(/^\/api\/control\/screenshots\/([a-f0-9-]+)$/);
@@ -135,6 +137,16 @@ async function controlCommand(req, res) {
   db.prepare("INSERT INTO commands(id,device,command,created_at) VALUES(?,?,?,?)").run(command.id, device, command.command, command.createdAt);
   logEvent(device, "COMMAND_QUEUED", command); broadcast({ type: "command", ...command });
   sendJson(res, 202, command);
+}
+
+function commandStatus(res, id) {
+  const row = db.prepare("SELECT id,device,command,created_at,acknowledged_at,result FROM commands WHERE id=?").get(id);
+  if (!row) return sendJson(res, 404, { error: "not_found" });
+  sendJson(res, 200, {
+    id: row.id, device: row.device, command: row.command, createdAt: row.created_at,
+    acknowledgedAt: row.acknowledged_at || null, result: row.result || null,
+    state: row.acknowledged_at ? "ACKNOWLEDGED" : "QUEUED"
+  });
 }
 
 async function deviceScreenshot(req, res, url) {
