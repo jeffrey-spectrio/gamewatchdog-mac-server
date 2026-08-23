@@ -17,7 +17,7 @@ const RETENTION_DAYS = numberEnv("SCREENSHOT_RETENTION_DAYS", 3);
 const MAX_BYTES = numberEnv("SCREENSHOT_MAX_GB", 5) * 1024 ** 3;
 const COMMAND_TTL_MS = numberEnv("COMMAND_TTL_SECONDS", 3600) * 1000;
 const DEVICE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const COMMANDS = new Set(["RELOGIN_HOME", "EXTEND_30", "CANCEL_AUTO_RELOGIN", "START_FARM", "STOP_FARM", "ENABLE_WATCHDOG", "DISABLE_WATCHDOG", "START_TICKET", "STOP_TICKET", "CAPTURE_SCREEN", "RESTART_GAME", "TAP_SCREEN", "START_REMOTE_CONTROL", "STOP_REMOTE_CONTROL", "NAV_BACK", "NAV_HOME", "NAV_RECENTS"]);
+const COMMANDS = new Set(["RELOGIN_HOME", "EXTEND_30", "CANCEL_AUTO_RELOGIN", "START_FARM", "STOP_FARM", "ENABLE_WATCHDOG", "DISABLE_WATCHDOG", "START_TICKET", "STOP_TICKET", "CAPTURE_SCREEN", "RESTART_GAME", "TAP_SCREEN", "TAP_AND_CAPTURE", "START_REMOTE_CONTROL", "STOP_REMOTE_CONTROL", "NAV_BACK", "NAV_HOME", "NAV_RECENTS", "NAV_BACK_CAPTURE", "NAV_HOME_CAPTURE", "NAV_RECENTS_CAPTURE"]);
 
 mkdirSync(DATA_DIR, { recursive: true });
 mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -140,8 +140,9 @@ async function deviceAck(req, res) {
 async function controlCommand(req, res) {
   const body = await readJson(req, 32_000); const device = validDevice(body.device);
   if (!device || !COMMANDS.has(body.command)) return sendJson(res, 400, { error: "invalid_command" });
-  const payload = body.command === "TAP_SCREEN" ? validTapPayload(body.payload) : {};
-  if (body.command === "TAP_SCREEN" && !payload) return sendJson(res, 400, { error: "invalid_tap_coordinates" });
+  const tapCommand = body.command === "TAP_SCREEN" || body.command === "TAP_AND_CAPTURE";
+  const payload = tapCommand ? validTapPayload(body.payload) : {};
+  if (tapCommand && !payload) return sendJson(res, 400, { error: "invalid_tap_coordinates" });
   const command = { id: randomUUID(), device, command: body.command, payload, createdAt: Date.now() };
   db.prepare("INSERT INTO commands(id,device,command,payload,created_at) VALUES(?,?,?,?,?)").run(command.id, device, command.command, JSON.stringify(payload), command.createdAt);
   logEvent(device, "COMMAND_QUEUED", command); broadcast({ type: "command", ...command });
