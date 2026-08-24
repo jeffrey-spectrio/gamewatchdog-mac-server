@@ -11,6 +11,7 @@ Mac mini self-hosted replacement for the Cloudflare Worker. The existing Worker 
 - Authentication failure rate limiting
 - Authenticated WebSocket event stream at `/ws`
 - Minimal mobile control page
+- Remote controls and live status for automatic PvP and D1 modes
 - Caddy HTTPS and macOS launchd examples
 
 ## Requirements
