@@ -12,6 +12,8 @@ Mac mini self-hosted replacement for the Cloudflare Worker. The existing Worker 
 - Authenticated WebSocket event stream at `/ws`
 - Minimal mobile control page
 - Remote controls and live status for automatic PvP and D1 modes
+- Android APK OTA manifest, SHA-256 verification metadata and streamed download
+- iOS App Store, TestFlight or enterprise update-link manifest
 - Caddy HTTPS and macOS launchd examples
 
 ## Requirements
@@ -81,3 +83,13 @@ The following Worker-compatible endpoints are retained:
 - `POST /api/device/poll`
 - `POST /api/device/ack`
 - `POST /api/device/screenshot`
+
+## OTA app releases
+
+Set `PUBLIC_BASE_URL` to the public HTTPS origin. For Android, copy the signed APK to the path in `ANDROID_APK_PATH`, then set `ANDROID_VERSION` and the monotonically increasing `ANDROID_BUILD`. The app checks the public manifest, downloads the APK, verifies its server-provided SHA-256 digest and opens Android's system installer for user confirmation. Android still enforces that the APK is signed with the same signing key.
+
+For iOS, set `IOS_VERSION`, `IOS_BUILD` and an HTTPS `IOS_UPDATE_URL` pointing to the App Store, TestFlight or your managed enterprise distribution page. iOS does not permit an app to silently replace itself.
+
+- `GET /api/app/update?platform=android&build=1718`
+- `GET /api/app/update?platform=ios&build=2`
+- `GET /api/app/download/android`

@@ -2,7 +2,7 @@ import http from "node:http";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer } from "ws";
 
@@ -16,6 +16,15 @@ const SCREENSHOT_DIR = resolve(process.env.SCREENSHOT_DIR || "./screenshots");
 const RETENTION_DAYS = numberEnv("SCREENSHOT_RETENTION_DAYS", 3);
 const MAX_BYTES = numberEnv("SCREENSHOT_MAX_GB", 5) * 1024 ** 3;
 const COMMAND_TTL_MS = numberEnv("COMMAND_TTL_SECONDS", 3600) * 1000;
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+const ANDROID_APK_PATH = process.env.ANDROID_APK_PATH ? resolve(process.env.ANDROID_APK_PATH) : "";
+const ANDROID_VERSION = process.env.ANDROID_VERSION || "";
+const ANDROID_BUILD = optionalNumberEnv("ANDROID_BUILD");
+const ANDROID_RELEASE_NOTES = process.env.ANDROID_RELEASE_NOTES || "";
+const IOS_VERSION = process.env.IOS_VERSION || "";
+const IOS_BUILD = optionalNumberEnv("IOS_BUILD");
+const IOS_UPDATE_URL = process.env.IOS_UPDATE_URL || "";
+const IOS_RELEASE_NOTES = process.env.IOS_RELEASE_NOTES || "";
 const DEVICE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const COMMANDS = new Set(["RELOGIN_HOME", "EXTEND_30", "CANCEL_AUTO_RELOGIN", "CLEAR_TAKEOVER", "START_FARM", "STOP_FARM", "START_PVP", "STOP_PVP", "START_D1", "STOP_D1", "ENABLE_WATCHDOG", "DISABLE_WATCHDOG", "START_TICKET", "STOP_TICKET", "CAPTURE_SCREEN", "RESTART_GAME", "TAP_SCREEN", "TAP_AND_CAPTURE", "START_REMOTE_CONTROL", "STOP_REMOTE_CONTROL", "NAV_BACK", "NAV_HOME", "NAV_RECENTS", "NAV_BACK_CAPTURE", "NAV_HOME_CAPTURE", "NAV_RECENTS_CAPTURE"]);
 
@@ -84,6 +93,8 @@ async function route(req, res) {
   if (req.method === "GET" && url.pathname === "/") return serveFile(res, join(import.meta.dirname, "../web/index.html"), "text/html; charset=utf-8");
   if (req.method === "GET" && url.pathname === "/app.js") return serveFile(res, join(import.meta.dirname, "../web/app.js"), "text/javascript; charset=utf-8");
   if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, serverTime: Date.now() });
+  if (req.method === "GET" && url.pathname === "/api/app/update") return appUpdate(req, res, url);
+  if (req.method === "GET" && url.pathname === "/api/app/download/android") return androidDownload(res);
 
   if (req.method === "GET" && url.pathname === "/api/control/status") {
     const device = validDevice(url.searchParams.get("device")); if (!device) return sendJson(res, 400, { error: "invalid_device" });
@@ -111,6 +122,36 @@ async function route(req, res) {
     if (req.method === "GET" && url.pathname === "/api/control/screenshot") return consumeScreenshot(res, url);
   }
   sendJson(res, 404, { error: "not_found" });
+}
+
+function appUpdate(req, res, url) {
+  const platform = url.searchParams.get("platform");
+  if (platform === "android") {
+    if (!ANDROID_APK_PATH || !ANDROID_VERSION || !ANDROID_BUILD || !existsSync(ANDROID_APK_PATH)) return sendJson(res, 404, { error: "release_not_configured" });
+    const stat = statSync(ANDROID_APK_PATH);
+    return sendJson(res, 200, {
+      platform, latestVersion: ANDROID_VERSION, latestBuild: ANDROID_BUILD,
+      downloadURL: `${publicOrigin(req)}/api/app/download/android`,
+      releaseNotes: ANDROID_RELEASE_NOTES, mandatory: false,
+      sha256: sha256File(ANDROID_APK_PATH), size: stat.size, publishedAt: stat.mtimeMs
+    });
+  }
+  if (platform === "ios") {
+    if (!IOS_VERSION || !IOS_BUILD || !/^https:\/\//.test(IOS_UPDATE_URL)) return sendJson(res, 404, { error: "release_not_configured" });
+    return sendJson(res, 200, { platform, latestVersion: IOS_VERSION, latestBuild: IOS_BUILD, downloadURL: IOS_UPDATE_URL, releaseNotes: IOS_RELEASE_NOTES, mandatory: false });
+  }
+  sendJson(res, 400, { error: "invalid_platform" });
+}
+
+function androidDownload(res) {
+  if (!ANDROID_APK_PATH || !existsSync(ANDROID_APK_PATH)) return sendJson(res, 404, { error: "release_not_configured" });
+  const stat = statSync(ANDROID_APK_PATH);
+  res.writeHead(200, {
+    "content-type": "application/vnd.android.package-archive", "content-length": stat.size,
+    "content-disposition": `attachment; filename="GameWatchdog-${ANDROID_VERSION || "update"}.apk"`,
+    "cache-control": "private, no-store", "x-content-type-options": "nosniff"
+  });
+  createReadStream(ANDROID_APK_PATH).pipe(res);
 }
 
 async function devicePoll(req, res, url) {
@@ -237,6 +278,13 @@ async function readJson(req, max) { return JSON.parse((await readBody(req, max))
 async function readBody(req, max) { const chunks = []; let size = 0; for await (const chunk of req) { size += chunk.length; if (size > max) throw new Error("request_too_large"); chunks.push(chunk); } return Buffer.concat(chunks); }
 function required(name) { const value = process.env[name]; if (!value || value.startsWith("replace-")) throw new Error(`${name} is required`); return value; }
 function numberEnv(name, fallback) { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? value : fallback; }
+function optionalNumberEnv(name) { const value = Number(process.env[name]); return Number.isInteger(value) && value > 0 ? value : null; }
+function publicOrigin(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  return `${proto}://${req.headers.host || "localhost"}`;
+}
+function sha256File(path) { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
 function ensureColumn(table, column, type) { if (!db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`); }
 function loadEnv() { const path = resolve(".env"); if (!existsSync(path)) return; for (const line of readFileSync(path, "utf8").split(/\r?\n/)) { const match = line.match(/^([A-Z0-9_]+)=(.*)$/); if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2]; } }
 
